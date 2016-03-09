@@ -3,15 +3,23 @@
 import os, sys, signal, stat
 import pyinotify
 
-uid = None
-gid = None
 pid = None
-wm = None
-wdd = None
-notifier = None
-copy_in_progress = False
-exit_app = False
-downloadsdirsrc = None
+watch_info = None
+
+class WatchInfo(object):
+    def __init__(self, watchdirs, handler, mask):
+        super(WatchInfo, self).__init__()
+        self.watchdirs = watchdirs
+        self.wm = pyinotify.WatchManager()  # Watch Manager
+        self.notifier = pyinotify.Notifier(self.wm, handler)
+        self.wdd = self.wm.add_watch(watchdirs, mask, rec=True, auto_add=True)
+
+    def exit(self):
+        self.wm.rm_watch(self.wdd.values())
+        raise KeyboardInterrupt();
+
+    def start_watch(self):
+        self.notifier.loop()
 
 def die(msg):
     sys.stderr.write(msg + '\n')
@@ -31,9 +39,9 @@ def get_sync_dir(confdic, sectname):
 # 2, src dir to sync from
 # 3, dst dir to sync
 def main():
-    global uid, gid
-    uid = os.getuid()
-    gid = os.getgid()
+    global watch_info, pid
+    realuid = os.getuid()
+    realgid = os.getgid()
     print("py: uid: {}, euid: {}".format(os.getuid(), os.geteuid()))
 
     try:
@@ -47,20 +55,26 @@ def main():
     except Exception as e:
         die('Could not find a valid configuration file: sandbox.ini')
 
-    signal.signal(signal.SIGCHLD, sighandler)
-
     chroot = confdic['chroot']
     cmd = confdic['cmdinchroot']
     ret = exec_proc(chroot, cmd)
-    ret = True
+    if ret:
+        pid = ret
+        signal.signal(signal.SIGCHLD, sighandler)
 
-    if ret and src and dst:
-        global downloadsdirsrc
-        downloadsdirsrc = src
+
+    if pid and src and dst:
         print('Start sync src: {} to dst: {}'.format(src, dst))
-        sync_dirs(src, dst)
+        mask = pyinotify.IN_MOVED_TO | \
+               pyinotify.IN_CLOSE_WRITE
+        ev_handler = EventHandler(src, dst, realuid, realgid)
+        watch_info = WatchInfo([src], ev_handler, mask)
+        watch_info.start_watch()
+
+        cleanup_and_exit(src)
 
 def rm_dir_contents(dirpath):
+    import shutil
     for f in os.listdir(dirpath):
         file_path = os.path.join(dirpath, f)
         try:
@@ -77,17 +91,12 @@ def cleanup_and_exit(downloadsdir):
 
 def sighandler(signum, frame):
     wpid, st = os.waitpid(-1, os.WNOHANG)
-    if wpid == pid and wm:
+    if wpid == pid and watch_info:
         # restore signal handler
-        signal.signal(signal.SIG_IGN, sighandler)
-        wm.rm_watch(wdd.values())
-        if copy_in_progress:
-            exit_app = True
-        else:
-            cleanup_and_exit(downloadsdirsrc)
+        signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+        watch_info.exit()
 
 def exec_proc(chroot, cmd):
-    global pid
     pid = os.fork()
     if pid == 0:
         sys.stdin = open('/dev/null', 'rb')
@@ -99,19 +108,13 @@ def exec_proc(chroot, cmd):
     return pid
 
 class EventHandler(pyinotify.ProcessEvent):
-    def __init__(self, srcdir, dstdir):
+    def __init__(self, srcdir, dstdir, uid, gid):
         super(EventHandler, self).__init__()
         self.frm = None
         self.srcdir = srcdir
         self.dstdir = dstdir
-
-    def is_downloaded(self, path, ext='.part'):
-        l = len(ext)
-        if len(self.frm) < l:
-            return False
-        if self.frm[-l:] != ext:
-            return False
-        return self.frm[:-l] == path
+        self.uid = uid
+        self.gid = gid
 
     def process_IN_CLOSE_WRITE(self, event):
         st = os.lstat(event.pathname)
@@ -122,7 +125,8 @@ class EventHandler(pyinotify.ProcessEvent):
         print('extension: {}'.format(ext))
         if ext == '.part':
             return
-        copy_file(event.pathname, self.dstdir, uid, gid)
+        copy_file(self.srcdir, event.pathname,
+                  self.dstdir, self.uid, self.gid)
 
     def process_IN_CREATE(self, event):
         print "Creating:", event.pathname
@@ -141,20 +145,20 @@ class EventHandler(pyinotify.ProcessEvent):
 
     def process_IN_MOVED_TO(self, event):
         print "Moved to:", event.pathname
-        if self.is_downloaded(event.pathname):
-            print('file downloaded: {}'.format(event.pathname))
-        copy_file(event.pathname, self.dstdir, uid, gid)
+        copy_file(self.srcdir, event.pathname,
+                  self.dstdir, self.uid, self.gid)
 
-def copy_file(filepath, dstdir, uid=None, gid=None):
+def copy_file(basedir, filepath, dstdir, uid=None, gid=None):
     import shutil
-    copy_in_progress = True
+    subdir = os.path.relpath(os.path.dirname(filepath), basedir)
+    if subdir is not '.':
+        dstdir = os.path.join(dstdir, subdir)
+        mkdir_p(dstdir)
     print('copying: {} --> {}'.format(filepath, dstdir))
     shutil.copy(filepath, dstdir)
     if uid and gid:
+        os.lchown(dstdir, uid, gid)
         os.lchown(os.path.join(dstdir, os.path.basename(filepath)), uid, gid)
-    copy_in_progress = False
-    if exit_app:
-       cleanup_and_exit(self.srcdir)
 
 def mkdir_p(path):
     import errno
@@ -168,19 +172,6 @@ def mkdir_p(path):
 
 def app_dir_path():
     return os.path.dirname(os.path.realpath(__file__))
-
-def sync_dirs(src, dst):
-    global wm, wdd, notifier
-    wm = pyinotify.WatchManager()  # Watch Manager
-    mask = pyinotify.IN_DELETE | pyinotify.IN_CREATE | \
-           pyinotify.IN_MOVED_FROM | pyinotify.IN_MOVED_TO | \
-           pyinotify.IN_CLOSE_WRITE
-
-    handler = EventHandler(src, dst)
-    notifier = pyinotify.Notifier(wm, handler)
-    wdd = wm.add_watch(src, mask, rec=True)
-
-    notifier.loop()
 
 def parse_config_sect(configfile, section='default'):
     from ConfigParser import SafeConfigParser
