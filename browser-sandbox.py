@@ -55,6 +55,8 @@ def main():
     except Exception as e:
         die('Could not find a valid configuration file: sandbox.ini')
 
+    x11_adjust_access(True)
+
     chroot = confdic['chroot']
     cmd = confdic['cmdinchroot']
     ret = exec_proc(chroot, cmd)
@@ -71,6 +73,7 @@ def main():
         watch_info = WatchInfo([src], ev_handler, mask)
         watch_info.start_watch()
 
+        x11_adjust_access(False)
         cleanup_and_exit(src)
 
 def rm_dir_contents(dirpath):
@@ -214,6 +217,11 @@ def get_configuration():
             savedexc = e
 
     raise savedexc
+
+def x11_adjust_access(enable):
+    import subprocess
+    sign = '+' if enable else '-'
+    subprocess.check_call(['xhost', sign])
 
 if __name__ == '__main__':
     main()
