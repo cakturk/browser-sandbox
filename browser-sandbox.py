@@ -168,11 +168,17 @@ def copy_file(basedir, filepath, dstdir, uid=None, gid=None):
     if subdir is not '.':
         dstdir = os.path.join(dstdir, subdir)
         mkdir_p(dstdir)
+
+    dstfilepath = os.path.join(dstdir, os.path.basename(filepath))
+    if os.path.exists(dstfilepath):
+        dstfilepath = make_up_filename(dstfilepath)
+        shutil.copyfile(filepath, dstfilepath)
+    else:
+        shutil.copy(filepath, dstdir)
     print('copying: {} --> {}'.format(filepath, dstdir))
-    shutil.copy(filepath, dstdir)
     if uid and gid:
         os.lchown(dstdir, uid, gid)
-        os.lchown(os.path.join(dstdir, os.path.basename(filepath)), uid, gid)
+        os.lchown(dstfilepath, uid, gid)
 
 def mkdir_p(path):
     import errno
