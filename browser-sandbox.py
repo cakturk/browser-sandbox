@@ -148,6 +148,20 @@ class EventHandler(pyinotify.ProcessEvent):
         copy_file(self.srcdir, event.pathname,
                   self.dstdir, self.uid, self.gid)
 
+def make_up_filename(dstpath):
+    import errno
+    max_try_count = 1024
+    root, ext = os.path.splitext(dstpath)
+    i = 0
+
+    while True:
+        if not os.path.exists(dstpath):
+            return dstpath
+        i += 1
+        if i > max_try_count:
+            raise OSError(errno.EEXIST, 'File already exists: ' + dstpath)
+        dstpath = '{0}({1}){2}'.format(root, i, ext)
+
 def copy_file(basedir, filepath, dstdir, uid=None, gid=None):
     import shutil
     subdir = os.path.relpath(os.path.dirname(filepath), basedir)
