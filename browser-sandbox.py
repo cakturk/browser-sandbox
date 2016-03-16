@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import os, sys, signal, stat
 import pyinotify
+import argparse
 
 pid = None
 watch_info = None
@@ -207,7 +208,7 @@ def parse_config_sect(configfile, section='default'):
 
     return dic
 
-def get_configuration():
+def get_configuration_from_file():
     savedexc = None
     appdirconf = os.path.join(app_dir_path(), 'sandbox.ini')
     for f in ['/etc/browser-sandbox/sandbox.ini', appdirconf]:
@@ -217,6 +218,26 @@ def get_configuration():
             savedexc = e
 
     raise savedexc
+
+def setup_arg_parser():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--chroot', help='path to new root directory')
+    ap.add_argument('--cmdinchroot', help='command to execute under new root')
+    ap.add_argument('--syncsrcdir', help='path to sync source directory')
+    ap.add_argument('--syncdstdir', help='path to sync dest directory')
+    return ap
+
+def get_configuration_from_args():
+    ap = setup_arg_parser()
+    args = ap.parse_args()
+    return vars(args)
+
+def get_configuration():
+    argsconf = get_configuration_from_args()
+    argsconf = dict((k, v) for k, v in argsconf.iteritems() if v)
+    fileconf = get_configuration_from_file()
+    fileconf.update(argsconf)
+    return fileconf
 
 def x11_adjust_access(enable):
     import subprocess
