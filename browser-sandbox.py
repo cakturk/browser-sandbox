@@ -43,7 +43,6 @@ def main():
     global watch_info, pid
     realuid = os.getuid()
     realgid = os.getgid()
-    print("py: uid: {}, euid: {}".format(os.getuid(), os.geteuid()))
 
     try:
         confdic = get_configuration()
