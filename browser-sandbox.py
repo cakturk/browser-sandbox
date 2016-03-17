@@ -200,7 +200,7 @@ def app_dir_path():
 def parse_config_sect(configfile, section='default'):
     from ConfigParser import SafeConfigParser
     parser = SafeConfigParser()
-    parser.read(os.path.join(app_dir_path(), configfile))
+    parser.read(configfile)
 
     dic = {}
     for opt in parser.options(section):
