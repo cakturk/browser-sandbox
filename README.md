@@ -41,6 +41,15 @@ apt-get install -y --no-install-recommends iceweasel
 exit # jailden cik
 
 ```
+
+Opsiyonel bagimliliklar:
+
+clamav virus tarama destegi icin;
+
+```
+# pip install clamd
+```
+
 sandbox.ini ayar dosyasi
 ------------------------
 Ayar dosyasini /etc/browser-sandbox/sandbox.ini ya da browser-sandbox.py
