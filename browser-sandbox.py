@@ -69,7 +69,10 @@ def main():
         print('Start sync src: {} to dst: {}'.format(src, dst))
         mask = pyinotify.IN_MOVED_TO | \
                pyinotify.IN_CLOSE_WRITE
-        ev_handler = EventHandler(src, dst, realuid, realgid)
+        ev_handler = EventHandler(src, dst, realuid, realgid,
+                                  virus_scanner_init(),
+                                  notifier_init('Warning!', 'Virus found',
+                                                'dialog-error'))
         watch_info = WatchInfo([src], ev_handler, mask)
         watch_info.start_watch()
 
@@ -93,11 +96,18 @@ def cleanup_and_exit(downloadsdir):
     sys.exit(0)
 
 def sighandler(signum, frame):
-    wpid, st = os.waitpid(-1, os.WNOHANG)
-    if wpid == pid and watch_info:
-        # restore signal handler
-        signal.signal(signal.SIGCHLD, signal.SIG_IGN)
-        watch_info.exit()
+    try:
+        wpid, st = os.waitpid(-1, os.WNOHANG)
+        if wpid == pid and watch_info:
+            # restore signal handler
+            signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+            watch_info.exit()
+    except OSError as e:
+        import errno
+        if e.errno == errno.ECHILD:
+            pass
+        else:
+            raise
 
 def exec_proc(chroot, cmd):
     pid = os.fork()
@@ -111,13 +121,27 @@ def exec_proc(chroot, cmd):
     return pid
 
 class EventHandler(pyinotify.ProcessEvent):
-    def __init__(self, srcdir, dstdir, uid, gid):
+    def __init__(self, srcdir, dstdir, uid, gid, scan_fn, notifier):
         super(EventHandler, self).__init__()
         self.frm = None
         self.srcdir = srcdir
         self.dstdir = dstdir
         self.uid = uid
         self.gid = gid
+        self.scan_fn = scan_fn
+        self.notifier = notifier
+
+    def scan_and_copy(self, event):
+        found, msg = self.scan_fn(event.pathname)
+        if found:
+            self.notifier.update('Uyarı!', '{0} adlı dosya virus olarak '
+                    'algılandıgından dolayı siliniyor!\n\nDetay: {1}'
+                    .format(event.pathname, msg), 'dialog-error')
+            os.path.isfile(event.pathname) and os.unlink(event.pathname)
+            self.notifier.show()
+            return
+        copy_file(self.srcdir, event.pathname,
+                  self.dstdir, self.uid, self.gid)
 
     def process_IN_CLOSE_WRITE(self, event):
         st = os.lstat(event.pathname)
@@ -128,8 +152,7 @@ class EventHandler(pyinotify.ProcessEvent):
         print('extension: {}'.format(ext))
         if ext == '.part':
             return
-        copy_file(self.srcdir, event.pathname,
-                  self.dstdir, self.uid, self.gid)
+        self.scan_and_copy(event)
 
     def process_IN_CREATE(self, event):
         print "Creating:", event.pathname
@@ -148,8 +171,7 @@ class EventHandler(pyinotify.ProcessEvent):
 
     def process_IN_MOVED_TO(self, event):
         print "Moved to:", event.pathname
-        copy_file(self.srcdir, event.pathname,
-                  self.dstdir, self.uid, self.gid)
+        self.scan_and_copy(event)
 
 def make_up_filename(dstpath):
     import errno
@@ -242,6 +264,35 @@ def x11_adjust_access(enable):
     import subprocess
     sign = '+' if enable else '-'
     subprocess.check_call(['xhost', sign])
+
+def virus_scanner_init():
+    try:
+        import clamd
+
+        cd = clamd.ClamdUnixSocket()
+
+        def clamd_scan(fpath):
+            r = cd.scan(fpath)
+            found, msg = r.values()[0]
+            return (found == 'FOUND', msg)
+
+        return clamd_scan
+
+    except ImportError as e:
+        return lambda fpath: (False, None)
+
+def notifier_init(summary, body, icon='dialog-information'):
+    try:
+        from gi.repository import Notify
+        Notify.init("browsersandbox")
+        n = Notify.Notification.new(summary, body, icon)
+        return n
+
+    except ImportError as e:
+        return type('NullNotifier', (object,), {
+            'show':lambda self: None,
+            'update':lambda self, x, y, z=None: None
+            })()
 
 if __name__ == '__main__':
     main()
